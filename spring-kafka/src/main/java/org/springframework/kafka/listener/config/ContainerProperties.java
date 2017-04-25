@@ -36,14 +36,11 @@ import org.springframework.util.Assert;
  *
  * @author Gary Russell
  * @author Artem Bilan
+ * @author Artem Yakshin
  */
 public class ContainerProperties {
 
 	private static final int DEFAULT_SHUTDOWN_TIMEOUT = 10000;
-
-	private static final int DEFAULT_QUEUE_DEPTH = 1;
-
-	private static final int DEFAULT_PAUSE_AFTER = 10000;
 
 	/**
 	 * Topic names.
@@ -106,33 +103,9 @@ public class ContainerProperties {
 	private AsyncListenableTaskExecutor consumerTaskExecutor;
 
 	/**
-	 * The executor for threads that invoke the listener.
-	 */
-	private AsyncListenableTaskExecutor listenerTaskExecutor;
-
-	/**
 	 * The error handler to call when the listener throws an exception.
 	 */
 	private GenericErrorHandler<?> errorHandler;
-
-	/**
-	 * When using Kafka group management and {@link #setPauseEnabled(boolean)} is
-	 * true, the delay after which the consumer should be paused. Default 10000.
-	 */
-	private long pauseAfter = DEFAULT_PAUSE_AFTER;
-
-	/**
-	 * When true, avoids rebalancing when this consumer is slow or throws a
-	 * qualifying exception - pauses the consumer. Default: true.
-	 * @see #pauseAfter
-	 */
-	private boolean pauseEnabled = true;
-
-	/**
-	 * Set the queue depth for handoffs from the consumer thread to the listener
-	 * thread. Default 1 (up to 2 in process).
-	 */
-	private int queueDepth = DEFAULT_QUEUE_DEPTH;
 
 	/**
 	 * The timeout for shutting down the container. This is the maximum amount of
@@ -267,42 +240,6 @@ public class ContainerProperties {
 	}
 
 	/**
-	 * Set the executor for threads that invoke the listener.
-	 * @param listenerTaskExecutor the executor.
-	 */
-	public void setListenerTaskExecutor(AsyncListenableTaskExecutor listenerTaskExecutor) {
-		this.listenerTaskExecutor = listenerTaskExecutor;
-	}
-
-	/**
-	 * When using Kafka group management and {@link #setPauseEnabled(boolean)} is
-	 * true, set the delay after which the consumer should be paused. Default 10000.
-	 * @param pauseAfter the delay.
-	 */
-	public void setPauseAfter(long pauseAfter) {
-		this.pauseAfter = pauseAfter;
-	}
-
-	/**
-	 * Set to true to avoid rebalancing when this consumer is slow or throws a
-	 * qualifying exception - pause the consumer. Default: true.
-	 * @param pauseEnabled true to pause.
-	 * @see #setPauseAfter(long)
-	 */
-	public void setPauseEnabled(boolean pauseEnabled) {
-		this.pauseEnabled = pauseEnabled;
-	}
-
-	/**
-	 * Set the queue depth for handoffs from the consumer thread to the listener
-	 * thread. Default 1 (up to 2 in process).
-	 * @param queueDepth the queue depth.
-	 */
-	public void setQueueDepth(int queueDepth) {
-		this.queueDepth = queueDepth;
-	}
-
-	/**
 	 * Set the timeout for shutting down the container. This is the maximum amount of
 	 * time that the invocation to {@code #stop(Runnable)} will block for, before
 	 * returning.
@@ -350,13 +287,17 @@ public class ContainerProperties {
 	}
 
 	/**
-	 * Set whether the container should ack messages that throw exceptions or not. This
-	 * works in conjunction with {@link #ackMode} and is effective only when auto ack is
-	 * false; it is not applicable to manual acks. When this property is set to
-	 * {@code true}, all messages handled will be acked. When set to {@code false}, acks
-	 * will be produced only for successful messages. This allows a component that starts
-	 * throwing exceptions consistently to resume from the last successfully processed
-	 * message. Manual acks will be always be applied.
+	 * Set whether or not the container should commit offsets (ack messages) where the
+	 * listener throws exceptions. This works in conjunction with {@link #ackMode} and is
+	 * effective only when the kafka property {@code enable.auto.commit} is {@code false};
+	 * it is not applicable to manual ack modes. When this property is set to {@code true}
+	 * (the default), all messages handled will have their offset committed. When set to
+	 * {@code false}, offsets will be committed only for successfully handled messages.
+	 * Manual acks will always be applied. Bear in mind that, if the next message is
+	 * successfully handled, its offset will be committed, effectively committing the
+	 * offset of the failed message anyway, so this option has limited applicability.
+	 * Perhaps useful for a component that starts throwing exceptions consistently;
+	 * allowing it to resume when restarted from the last successfully processed message.
 	 * @param ackOnError whether the container should acknowledge messages that throw
 	 * exceptions.
 	 */
@@ -400,24 +341,8 @@ public class ContainerProperties {
 		return this.consumerTaskExecutor;
 	}
 
-	public AsyncListenableTaskExecutor getListenerTaskExecutor() {
-		return this.listenerTaskExecutor;
-	}
-
 	public GenericErrorHandler<?> getGenericErrorHandler() {
 		return this.errorHandler;
-	}
-
-	public long getPauseAfter() {
-		return this.pauseAfter;
-	}
-
-	public boolean isPauseEnabled() {
-		return this.pauseEnabled;
-	}
-
-	public int getQueueDepth() {
-		return this.queueDepth;
 	}
 
 	public long getShutdownTimeout() {
@@ -441,7 +366,8 @@ public class ContainerProperties {
 	}
 
 	public boolean isAckOnError() {
-		return this.ackOnError;
+		return this.ackOnError &&
+				!(AckMode.MANUAL_IMMEDIATE.equals(this.ackMode) || AckMode.MANUAL.equals(this.ackMode));
 	}
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,10 @@
 package org.springframework.kafka.config;
 
 import java.lang.reflect.Method;
+import java.util.Arrays;
 
+import org.springframework.core.annotation.AnnotationUtils;
+import org.springframework.kafka.listener.KafkaListenerErrorHandler;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.listener.adapter.BatchMessagingMessageListenerAdapter;
 import org.springframework.kafka.listener.adapter.HandlerAdapter;
@@ -26,6 +29,7 @@ import org.springframework.kafka.listener.adapter.RecordMessagingMessageListener
 import org.springframework.kafka.support.converter.BatchMessageConverter;
 import org.springframework.kafka.support.converter.MessageConverter;
 import org.springframework.kafka.support.converter.RecordMessageConverter;
+import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.messaging.handler.annotation.support.MessageHandlerMethodFactory;
 import org.springframework.messaging.handler.invocation.InvocableHandlerMethod;
 import org.springframework.util.Assert;
@@ -40,6 +44,7 @@ import org.springframework.util.Assert;
  * @author Stephane Nicoll
  * @author Artem Bilan
  * @author Gary Russell
+ * @author Venil Noronha
  */
 public class MethodKafkaListenerEndpoint<K, V> extends AbstractKafkaListenerEndpoint<K, V> {
 
@@ -49,6 +54,7 @@ public class MethodKafkaListenerEndpoint<K, V> extends AbstractKafkaListenerEndp
 
 	private MessageHandlerMethodFactory messageHandlerMethodFactory;
 
+	private KafkaListenerErrorHandler errorHandler;
 
 	/**
 	 * Set the object instance that should manage this endpoint.
@@ -85,6 +91,32 @@ public class MethodKafkaListenerEndpoint<K, V> extends AbstractKafkaListenerEndp
 	}
 
 	/**
+	 * Set the {@link KafkaListenerErrorHandler} to invoke if the listener method
+	 * throws an exception.
+	 * @param errorHandler the error handler.
+	 * @since 2.0
+	 */
+	public void setErrorHandler(KafkaListenerErrorHandler errorHandler) {
+		this.errorHandler = errorHandler;
+	}
+
+	private String getReplyTopic() {
+		Method method = getMethod();
+		if (method != null) {
+			SendTo ann = AnnotationUtils.getAnnotation(method, SendTo.class);
+			if (ann != null) {
+				String[] destinations = ann.value();
+				if (destinations.length > 1) {
+					throw new IllegalStateException("Invalid @" + SendTo.class.getSimpleName() + " annotation on '"
+							+ method + "' one destination must be set (got " + Arrays.toString(destinations) + ")");
+				}
+				return destinations.length == 1 ? resolve(destinations[0]) : "";
+			}
+		}
+		return null;
+	}
+
+	/**
 	 * Return the {@link MessageHandlerMethodFactory}.
 	 * @return the messageHandlerMethodFactory
 	 */
@@ -99,6 +131,14 @@ public class MethodKafkaListenerEndpoint<K, V> extends AbstractKafkaListenerEndp
 				"Could not create message listener - MessageHandlerMethodFactory not set");
 		MessagingMessageListenerAdapter<K, V> messageListener = createMessageListenerInstance(messageConverter);
 		messageListener.setHandlerMethod(configureListenerAdapter(messageListener));
+		String replyTopic = getReplyTopic();
+		if (replyTopic != null) {
+			Assert.state(getReplyTemplate() != null, "a KafkaTemplate is required to support replies");
+			messageListener.setReplyTopic(replyTopic);
+		}
+		if (getReplyTemplate() != null) {
+			messageListener.setReplyTemplate(getReplyTemplate());
+		}
 		return messageListener;
 	}
 
@@ -119,21 +159,37 @@ public class MethodKafkaListenerEndpoint<K, V> extends AbstractKafkaListenerEndp
 	 * @return the {@link MessagingMessageListenerAdapter} instance.
 	 */
 	protected MessagingMessageListenerAdapter<K, V> createMessageListenerInstance(MessageConverter messageConverter) {
+		MessagingMessageListenerAdapter<K, V> listener;
 		if (isBatchListener()) {
 			BatchMessagingMessageListenerAdapter<K, V> messageListener = new BatchMessagingMessageListenerAdapter<K, V>(
-					this.bean, this.method);
+					this.bean, this.method, this.errorHandler);
 			if (messageConverter instanceof BatchMessageConverter) {
 				messageListener.setBatchMessageConverter((BatchMessageConverter) messageConverter);
 			}
-			return messageListener;
+			listener = messageListener;
 		}
 		else {
-			RecordMessagingMessageListenerAdapter<K, V> messageListener =
-					new RecordMessagingMessageListenerAdapter<K, V>(this.bean, this.method);
+			RecordMessagingMessageListenerAdapter<K, V> messageListener = new RecordMessagingMessageListenerAdapter<K, V>(
+					this.bean, this.method, this.errorHandler);
 			if (messageConverter instanceof RecordMessageConverter) {
 				messageListener.setMessageConverter((RecordMessageConverter) messageConverter);
 			}
-			return messageListener;
+			listener = messageListener;
+		}
+		if (getBeanResolver() != null) {
+			listener.setBeanResolver(getBeanResolver());
+		}
+		return listener;
+	}
+
+	private String resolve(String value) {
+		if (getResolver() != null) {
+			Object newValue = getResolver().evaluate(value, getBeanExpressionContext());
+			Assert.isInstanceOf(String.class, newValue, "Invalid @SendTo expression");
+			return (String) newValue;
+		}
+		else {
+			return value;
 		}
 	}
 

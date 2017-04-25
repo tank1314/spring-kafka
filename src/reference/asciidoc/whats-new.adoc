@@ -6,3 +6,12 @@
 New `KafkaHeaders` have been introduced regarding `timestamp` support.
 Also new `KafkaConditions.timestamp()` and `KafkaMatchers.hasTimestamp()` testing utilities have been added.
 See <<kafka-template>>, <<kafka-listener-annotation>> and <<testing>> for more details.
+
+===== @KafkaListener Changes
+
+You can now configure a `KafkaListenerErrorHandler` to handle exceptions.
+See <<annotation-error-handling>> for more information.
+
+You can now annotate `@KafkaListener` methods (and classes, and `@KafkaHandler` methods) with `@SendTo`.
+If the method returns a result, it is forwarded to the specified topic.
+See <<annotation-send-to>> for more information.

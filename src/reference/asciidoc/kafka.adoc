@@ -250,6 +250,21 @@ The second takes an array of topics and Kafka allocates the partitions based on 
 partitions across the group.
 The third uses a regex `Pattern` to select the topics.
 
+To assign a `MessageListener` to a container, use the `ContainerProps.setMessageListener` method when creating the Container:
+
+[source, java]
+----
+ContainerProperties containerProps = new ContainerProperties("topic1", "topic2");
+containerProps.setMessageListener(new MessageListener<Integer, String>() {
+    ...
+});
+DefaultKafkaConsumerFactory<Integer, String> cf =
+                        new DefaultKafkaConsumerFactory<Integer, String>(consumerProps());
+KafkaMessageListenerContainer<Integer, String> container =
+                        new KafkaMessageListenerContainer<>(cf, containerProps);
+return container;
+----
+
 Refer to the JavaDocs for `ContainerProperties` for more information about the various properties that can be set.
 
 ====== ConcurrentMessageListenerContainer
@@ -490,6 +505,117 @@ public void listen(List<ConsumerRecord<Integer, String>> list, Acknowledgment ac
 }
 ----
 
+===== Container Thread Naming
+
+Listener containers currently use two task executors, one to invoke the consumer and another which will be used to invoke the listener, when the kafka consumer property `enable.auto.commit` is `false`.
+You can provide custom executors by setting the `consumerExecutor` and `listenerExecutor` properties of the container's `ContainerProperties`.
+When using pooled executors, be sure that enough threads are available to handle the concurrency across all the containers in which they are used.
+When using the `ConcurrentMessageListenerContainer`, a thread from each is used for each consumer (`concurrency`).
+
+If you don't provide a consumer executor, a `SimpleAsyncTaskExecutor` is used; this executor creates threads with names `<beanName>-C-1` (consumer thread).
+For the `ConcurrentMessageListenerContainer`, the `<beanName>` part of the thread name becomes `<beanName>-m`, where `m` represents the consumer instance.
+`n` increments each time the container is started.
+So, with a bean name of `container`, threads in this container will be named `container-0-C-1`, `container-1-C-1` etc., after the container is started the first time; `container-0-C-2`, `container-1-C-2` etc., after a stop/start.
+
+[[class-level-kafkalistener]]
+===== @KafkaListener on a class
+
+When using `@KafkaListener` at the class-level, you specify `@KafkaHandler` at the method level.
+When messages are delivered, the converted message payload type is used to determine which method to call.
+
+[source, java]
+----
+@KafkaListener(id = "multi", topics = "myTopic")
+static class MultiListenerBean {
+
+    @KafkaHandler
+    public void listen(String foo) {
+        ...
+    }
+
+    @KafkaHandler
+    public void listen(Integer bar) {
+        ...
+    }
+
+}
+----
+
+[[annotation-send-to]]
+===== Forwarding Listener Results using @SendTo
+
+Starting with _version 2.0_, if you also annotate a `@KafkaListener` with a `@SendTo` annotation and the method invocation returns a result, the result will be forwared to the topic specified by the `@SendTo`.
+
+The `@SendTo` value can have several forms:
+
+- `@SendTo("someTopic")` routes to the literal topic
+- `@SendTo("#{someExpression}")` routes to the topic determined by evaluating the expression once during application context initialization.
+- `@SendTo("!{someExpression}")` routes to the topic determined by evaluating the expression at runtime.
+The `#root` object for the evaluation has 4 properties:
+  - request - the inbound `ConsumerRecord` (or `ConsumerRecords` object for a batch listener))
+  - source - the `org.springframework.messaging.Message<?>` converted from the `request`.
+  - result - the method return result.
+The expression must return a `String` representing the topic name.
+
+[source, java]
+----
+@KafkaListener(topics = "annotated21")
+@SendTo("!{request.value()}") // runtime SpEL
+public String replyingListener(String in) {
+    ...
+}
+
+@KafkaListener(topics = "annotated22")
+@SendTo("#{myBean.replyTopic}") // config time SpEL
+public Collection<String> replyingBatchListener(List<String> in) {
+    ...
+}
+
+@KafkaListener(topics = "annotated23")
+@SendTo("annotated23reply") // static reply topic definition
+public String replyingListenerWithErrorHandler(String in) {
+    ...
+}
+...
+@KafkaListener(topics = "annotated25")
+@SendTo("annotated25reply1")
+public class MultiListenerSendTo {
+
+    @KafkaHandler
+    public String foo(String in) {
+        ...
+    }
+
+    @KafkaHandler
+    @SendTo("!{'annotated25reply2'}")
+    public String bar(@Payload(required = false) KafkaNull nul,
+    		@Header(KafkaHeaders.RECEIVED_MESSAGE_KEY) int key) {
+        ...
+    }
+
+}
+----
+
+When using `@SendTo`, the `ConcurrentKafkaListenerContainerFactory` must be configured with a `KafkaTemplate` in its `replyTemplate` property, to perform the send.
+Note: only the simple `send(topic, value)` method is used, so you may wish to create a subclass to generate the partition and/or key...
+
+[source, java]
+----
+@Bean
+public KafkaTemplate<String, String> myReplyingTemplate() {
+    return new KafkaTemplate<Integer, String>(producerFactory()) {
+
+        @Override
+        public ListenableFuture<SendResult<String, String>> send(String topic, String data) {
+            return super.send(topic, partitionForData(data), keyForData(data), data);
+        }
+
+        ...
+
+    };
+}
+----
+
 ===== Filtering Messages
 
 In certain scenarios, such as rebalancing, a message may be redelivered that has already been processed.
@@ -526,7 +652,8 @@ In that case, the `ErrorHandler` will be invoked, if configured, or logged other
 
 When using `@KafkaListener`, set the `RetryTemplate` (and optionally `recoveryCallback`) on the container factory and the listener will be wrapped in the appropriate retrying adapter.
 
-A retry adapter is not provided for any of the batch <<message-listeners, message listeners>>.
+A retry adapter is not provided for any of the batch <<message-listeners, message listeners>> because the framework has no knowledge of where, in a batch, the failure occurred.
+Users wishing retry capabilities, when using a batch listener, are advised to use a `RetryTemplate` within the listener itself.
 
 [[idle-containers]]
 ===== Detecting Idle Asynchronous Consumers
@@ -597,8 +724,7 @@ public class Listener {
 
     @EventListener(condition = "event.listenerId.startsWith('qux-')")
     public void eventHandler(ListenerContainerIdleEvent event) {
-        this.event = event;
-        eventLatch.countDown();
+        ...
     }
 
 }
@@ -650,11 +776,15 @@ When using group management, the second method is called when assignments change
 You can use this method, for example, for setting initial offsets for the partitions, by calling the callback; you must use the callback argument, not the one passed into `registerSeekCallback`.
 This method will never be called if you explicitly assign partitions yourself; use the `TopicPartitionInitialOffset` in that case.
 
-The callback has one method:
+The callback has these methods:
 
 [source, java]
 ----
 void seek(String topic, int partition, long offset);
+
+void seekToBeginning(String topic, int partition);
+
+void seekToEnd(String topic, int partition);
 ----
 
 You can also perform seek operations from `onIdleContainer()` when an idle container is detected; see <<idle-containers>> for how to enable idle container detection.
@@ -758,8 +888,6 @@ When using a class-level `@KafkaListener`, some additional configuration is need
 @KafkaListener(id = "multi", topics = "myTopic")
 static class MultiListenerBean {
 
-    private final CountDownLatch latch1 = new CountDownLatch(2);
-
     @KafkaHandler
     public void listen(String foo) {
         ...
@@ -777,3 +905,29 @@ static class MultiListenerBean {
 
 }
 ----
+
+[[annotation-error-handling]]
+====== Handling Exceptions
+
+By default, if an annotated listener method throws an exception, it is thrown to the container, and the message will handled according to the container configuration.
+Nothing is returned to the sender.
+
+Starting with _version 2.0_, the `@KafkaListener` annotation has a new attribute: `errorHandler`.
+
+This attribute is not configured by default.
+
+Use the `errorHandler` to provide the bean name of a `KafkaListenerErrorHandler` implementation.
+This functional interface has one method:
+
+[source, java]
+----
+@FunctionalInterface
+public interface KafkaListenerErrorHandler {
+
+    Object handleError(Message<?> message, ListenerExecutionFailedException exception) throws Exception;
+
+}
+----
+
+As you can see, you have access to the spring-messaging `Message<?>` object produced by the message converter and the exception that was thrown by the listener, wrapped in a `ListenerExecutionFailedException`.
+The error handler can throw the original or a new exception which will be thrown to the container. Anything returned by the error handler is ignored.
