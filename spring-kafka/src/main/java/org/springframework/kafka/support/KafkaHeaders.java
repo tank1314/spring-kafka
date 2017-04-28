@@ -44,14 +44,25 @@ public abstract class KafkaHeaders {
 	public static final String PARTITION_ID = PREFIX + "partitionId";
 
 	/**
-	 * The header for partition offset.
+	 * The header for the partition offset.
 	 */
 	public static final String OFFSET = PREFIX + "offset";
 
 	/**
-	 * The header for {@link Acknowledgment}.
+	 * The header containing the raw data received from Kafka ({@code ConsumerRecord} or
+	 * {@code ConsumerRecords}). Usually used to enhance error messages.
+	 */
+	public static final String RAW_DATA = PREFIX + "data";
+
+	/**
+	 * The header for the {@link Acknowledgment}.
 	 */
 	public static final String ACKNOWLEDGMENT = PREFIX + "acknowledgment";
+
+	/**
+	 * The header for the {@code Consumer} object.
+	 */
+	public static final String CONSUMER = PREFIX + "consumer";
 
 	/**
 	 * The header containing the topic from which the message was received.

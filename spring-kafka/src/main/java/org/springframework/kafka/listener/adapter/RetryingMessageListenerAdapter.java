@@ -57,12 +57,11 @@ public class RetryingMessageListenerAdapter<K, V>
 	 * thrown to the container after retries are exhausted.
 	 */
 	public RetryingMessageListenerAdapter(MessageListener<K, V> messageListener, RetryTemplate retryTemplate,
-			RecoveryCallback<Object> recoveryCallback) {
+			RecoveryCallback<? extends Object> recoveryCallback) {
 		super(messageListener, retryTemplate, recoveryCallback);
 		Assert.notNull(messageListener, "'messageListener' cannot be null");
 	}
 
-	@SuppressWarnings("unchecked")
 	@Override
 	public void onMessage(final ConsumerRecord<K, V> record, Acknowledgment acknowledgment, Consumer<?, ?> consumer) {
 		getRetryTemplate().execute(context -> {
